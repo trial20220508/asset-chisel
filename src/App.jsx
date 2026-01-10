@@ -1,8 +1,24 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { Plus, Trash2, TrendingUp, ChevronDown, ChevronUp, Wallet } from 'lucide-react';
+import ScenarioManager from './components/ScenarioManager';
+import {
+  getAllScenarios,
+  getCurrentScenarioId,
+  setCurrentScenarioId,
+  saveScenario,
+  deleteScenario,
+  getScenarioById,
+  exportToJSON,
+  importFromJSON,
+  createDefaultScenario
+} from './utils/scenarioStorage';
 
 const AssetSimulator = () => {
+  // シナリオ管理
+  const [scenarios, setScenarios] = useState([]);
+  const [currentScenarioId, setCurrentScenarioIdState] = useState(null);
+  
   const [simulationYears, setSimulationYears] = useState(30);
   
   // 資産リスト（ユーザーが自由に追加）
@@ -28,6 +44,150 @@ const AssetSimulator = () => {
       expanded: false
     }
   ]);
+
+  // 初回ロード時にシナリオを読み込む
+  useEffect(() => {
+    const loadedScenarios = getAllScenarios();
+    const savedCurrentId = getCurrentScenarioId();
+    
+    if (loadedScenarios.length > 0) {
+      setScenarios(loadedScenarios);
+      
+      // 現在のシナリオを復元
+      const currentId = savedCurrentId && loadedScenarios.find(s => s.id === savedCurrentId)
+        ? savedCurrentId
+        : loadedScenarios[0].id;
+      
+      setCurrentScenarioIdState(currentId);
+      
+      // データを復元
+      const currentScenario = loadedScenarios.find(s => s.id === currentId);
+      if (currentScenario && currentScenario.data) {
+        setSimulationYears(currentScenario.data.simulationYears);
+        setAssets(currentScenario.data.assets);
+      }
+    } else {
+      // 初回起動時：デフォルトシナリオを作成
+      const defaultData = {
+        simulationYears,
+        assets
+      };
+      const defaultScenario = createDefaultScenario(defaultData);
+      const saved = saveScenario(defaultScenario);
+      setScenarios([saved]);
+      setCurrentScenarioIdState(saved.id);
+    }
+  }, []); // 初回のみ実行
+
+  // データが変更されたら自動保存（デバウンス付き）
+  useEffect(() => {
+    if (!currentScenarioId) return;
+    
+    const timeoutId = setTimeout(() => {
+      const currentScenario = scenarios.find(s => s.id === currentScenarioId);
+      if (currentScenario) {
+        const updatedScenario = {
+          ...currentScenario,
+          data: {
+            simulationYears,
+            assets
+          }
+        };
+        const saved = saveScenario(updatedScenario);
+        setScenarios(prev => prev.map(s => s.id === saved.id ? saved : s));
+      }
+    }, 1000); // 1秒後に自動保存
+    
+    return () => clearTimeout(timeoutId);
+  }, [simulationYears, assets, currentScenarioId]);
+
+  // シナリオ切り替え
+  const handleScenarioChange = (scenarioId) => {
+    const scenario = scenarios.find(s => s.id === scenarioId);
+    if (scenario && scenario.data) {
+      setSimulationYears(scenario.data.simulationYears);
+      setAssets(scenario.data.assets);
+      setCurrentScenarioIdState(scenarioId);
+      setCurrentScenarioId(scenarioId);
+    }
+  };
+
+  // シナリオ保存
+  const handleSaveScenario = (scenario) => {
+    const saved = saveScenario(scenario);
+    setScenarios(prev => {
+      const existing = prev.find(s => s.id === saved.id);
+      if (existing) {
+        return prev.map(s => s.id === saved.id ? saved : s);
+      }
+      return [...prev, saved];
+    });
+  };
+
+  // シナリオ削除
+  const handleDeleteScenario = (scenarioId) => {
+    const remaining = deleteScenario(scenarioId);
+    setScenarios(remaining);
+    
+    if (remaining.length > 0) {
+      const newCurrent = getCurrentScenarioId() || remaining[0].id;
+      handleScenarioChange(newCurrent);
+    } else {
+      // 全削除された場合：新規作成
+      handleNewScenario();
+    }
+  };
+
+  // 新規シナリオ
+  const handleNewScenario = () => {
+    const newData = {
+      simulationYears: 30,
+      assets: [
+        {
+          id: 1,
+          name: '現金貯金',
+          initialAmount: 1000000,
+          returnRates: [{ id: 1, startYear: 1, endYear: 30, rate: 0 }],
+          investments: [],
+          events: [],
+          investmentLimit: { enabled: false, amount: 0 },
+          expanded: true
+        }
+      ]
+    };
+    
+    const newScenario = createDefaultScenario(newData);
+    const saved = saveScenario(newScenario);
+    setScenarios(prev => [...prev, saved]);
+    setCurrentScenarioIdState(saved.id);
+    setSimulationYears(newData.simulationYears);
+    setAssets(newData.assets);
+  };
+
+  // エクスポート
+  const handleExportScenario = (scenario) => {
+    const currentScenario = scenarios.find(s => s.id === scenario.id);
+    if (currentScenario) {
+      exportToJSON(currentScenario);
+    }
+  };
+
+  // インポート
+  const handleImportScenario = async (file) => {
+    try {
+      const imported = await importFromJSON(file);
+      const saved = saveScenario(imported);
+      setScenarios(prev => [...prev, saved]);
+      
+      // インポートしたシナリオのデータを即座に反映
+      setCurrentScenarioIdState(saved.id);
+      setCurrentScenarioId(saved.id);
+      setSimulationYears(saved.data.simulationYears);
+      setAssets(saved.data.assets);
+    } catch (error) {
+      throw error;
+    }
+  };
 
   // 資産を追加
   const addAsset = () => {
@@ -412,9 +572,24 @@ const AssetSimulator = () => {
         <div className="bg-white rounded-xl sm:rounded-2xl shadow-2xl p-4 sm:p-8 mb-4 sm:mb-6">
           <div className="flex items-center gap-2 sm:gap-3 mb-4 sm:mb-6">
             <TrendingUp className="w-6 h-6 sm:w-8 sm:h-8 text-indigo-600" />
-            <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-800">資産形成シミュレーター</h1>
+            <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-800">Asset Chisel</h1>
+            <span className="text-sm sm:text-base text-gray-500">- あなたの未来を彫り込む道具</span>
           </div>
+        </div>
 
+        {/* シナリオ管理 */}
+        <ScenarioManager
+          scenarios={scenarios}
+          currentScenarioId={currentScenarioId}
+          onScenarioChange={handleScenarioChange}
+          onSave={handleSaveScenario}
+          onDelete={handleDeleteScenario}
+          onExport={handleExportScenario}
+          onImport={handleImportScenario}
+          onNew={handleNewScenario}
+        />
+
+        <div className="bg-white rounded-xl sm:rounded-2xl shadow-2xl p-4 sm:p-8 mb-4 sm:mb-6">
           {/* サマリー */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 mb-6 sm:mb-8">
             <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg sm:rounded-xl p-4 sm:p-6 text-white">
